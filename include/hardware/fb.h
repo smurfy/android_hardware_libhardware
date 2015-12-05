@@ -18,6 +18,8 @@
 #ifndef ANDROID_FB_INTERFACE_H
 #define ANDROID_FB_INTERFACE_H
 
+#define SHMBUFFER_HARDWARE_MODULE_ID "shmbuffer"
+
 #include <stdint.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
@@ -164,6 +166,16 @@ static inline int framebuffer_open(const struct hw_module_t* module,
 }
 
 static inline int framebuffer_close(struct framebuffer_device_t* device) {
+    return device->common.close(&device->common);
+}
+
+static inline int shmbuffer_open(const struct hw_module_t* module,
+        struct framebuffer_device_t** device) {
+    return module->methods->open(module,
+            GRALLOC_HARDWARE_FB0, (struct hw_device_t**)device);
+}
+
+static inline int shmbuffer_close(struct framebuffer_device_t* device) {
     return device->common.close(&device->common);
 }
 
