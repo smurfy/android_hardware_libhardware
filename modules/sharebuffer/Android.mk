@@ -23,9 +23,9 @@ LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware
 
 LOCAL_SRC_FILES := 	\
-	shmbuffer.cpp
+	sharebuffer.cpp
 
-LOCAL_MODULE := shmbuffer.default
-LOCAL_CFLAGS:= -DLOG_TAG=\"shmbuffer\"
+LOCAL_MODULE := sharebuffer.default
+LOCAL_CFLAGS:= -DLOG_TAG=\"sharebuffer\"
 
 include $(BUILD_SHARED_LIBRARY)

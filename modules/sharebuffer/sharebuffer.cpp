@@ -22,10 +22,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <cutils/ashmem.h>
 #include <cutils/log.h>
@@ -37,6 +39,104 @@
 #include <linux/fb.h>
 
 #define NUM_BUFFERS 2
+
+#define SHM_BUFFER_HANDLE_FILE "/tmp/gralloc_buffer_handle"
+
+int connect_to_renderer()
+{
+    struct sockaddr_un addr;
+    int fd;
+
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if(fd < 0)
+    {
+        ALOGE("error creating socket stream");
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SHM_BUFFER_HANDLE_FILE, sizeof(addr.sun_path)-1);
+
+    if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        ALOGE("error connecting to renderer: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+int send_native_handle(int fd, const native_handle_t *handle)
+{
+    struct msghdr socket_message;
+    struct iovec io_vector[1];
+    struct cmsghdr *control_message = NULL;
+    unsigned int handle_size = sizeof(native_handle_t) + sizeof(int)*(handle->numFds + handle->numInts);
+    char message_buffer[handle_size];
+    char ancillary_buffer[CMSG_SPACE(sizeof(int) * handle->numFds)];
+
+    memcpy(message_buffer, handle, handle_size);
+
+    io_vector[0].iov_base = message_buffer;
+    io_vector[0].iov_len = handle_size;
+
+    memset(&socket_message, 0, sizeof(struct msghdr));
+    socket_message.msg_iov = io_vector;
+    socket_message.msg_iovlen = 1;
+
+    memset(ancillary_buffer, 0, CMSG_SPACE(sizeof(int) * handle->numFds));
+
+    socket_message.msg_control = ancillary_buffer;
+    socket_message.msg_controllen = CMSG_SPACE(sizeof(int) * handle->numFds);
+
+    control_message = CMSG_FIRSTHDR(&socket_message);
+    control_message->cmsg_len = socket_message.msg_controllen;
+    control_message->cmsg_level = SOL_SOCKET;
+    control_message->cmsg_type = SCM_RIGHTS;
+
+    for(int i=0;i<handle->numFds;i++)
+    {
+        ((int*)CMSG_DATA(control_message))[i] = handle->data[i];
+    }
+
+    return sendmsg(fd, &socket_message, 0);
+}
+
+int recv_status(int fd, int *failed)
+{
+    char message_buffer[3];
+
+    if(recv(fd, message_buffer, sizeof(message_buffer), MSG_WAITALL) < 0)
+    {
+        //*failed = 1;
+        return -1;
+    }
+
+    if(message_buffer[2] != 0)
+    {
+        ALOGE("message_buffer is not a 0 terminated string");
+        return -1;
+    }
+
+    if(strcmp(message_buffer, "OK") == 0)
+    {
+        *failed = 0;
+        return 0;
+    }
+    else
+    {
+        if(strcmp(message_buffer, "FA") != 0)
+        {
+            ALOGE("unknown status: %s", message_buffer);
+        }
+        *failed = 1;
+        return -1;
+    }
+
+    return -1;
+}
 
 enum {
     PAGE_FLIP = 0x00000001,
@@ -60,11 +160,8 @@ struct private_module_t {
     float ydpi;
     float fps;
 
-    int shm_fd;
-    void *shm_ptr;
+    int fd_renderer;
 };
-
-static gralloc_module_t *the_gralloc_module = NULL;
 
 struct fb_context_t {
     framebuffer_device_t device;
@@ -97,34 +194,41 @@ static int fb_setUpdateRect(struct framebuffer_device_t* dev,
 
 static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 {
+    // TODO: helpers for the sizeofs
     fb_context_t* ctx = (fb_context_t*)dev;
 
     private_module_t* m = reinterpret_cast<private_module_t*>(
             dev->common.module);
 
-    void* buffer_vaddr;
-
-    if(!the_gralloc_module)
+    if(m->fd_renderer < 0)
     {
-        ALOGE("gralloc module not initialized");
-        return -1;
+        ALOGW("connecting to renderer");
+        m->fd_renderer = connect_to_renderer();
     }
 
-    the_gralloc_module->lock(the_gralloc_module, buffer, 
-            GRALLOC_USAGE_SW_READ_RARELY, 
-            0, 0, m->info.xres, m->info.yres,
-            &buffer_vaddr);
-
-    if (m->shm_fd != -1 && m->shm_ptr != MAP_FAILED)
+    if(m->fd_renderer >= 0)
     {
-        memcpy(m->shm_ptr, buffer_vaddr, m->finfo.line_length * m->info.yres);
-    } else {
-        ALOGW("Not ready: fd = %d, shm = %p", m->shm_fd, m->shm_ptr);
+        int failed;
+
+        if(send_native_handle(m->fd_renderer, buffer) < 0)
+        {
+            ALOGW("sending buffer failed: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        if(recv_status(m->fd_renderer, &failed) < 0)
+        {
+            ALOGW("recv_status failed: %s", strerror(errno));
+            goto exit_error;
+        }
     }
-    
-    the_gralloc_module->unlock(the_gralloc_module, buffer); 
-    
+
     return 0;
+
+exit_error:
+    close(m->fd_renderer);
+    m->fd_renderer = -1;
+    return -1;
 }
 
 int mapFrameBufferLocked(struct private_module_t* module)
@@ -257,25 +361,8 @@ int mapFrameBufferLocked(struct private_module_t* module)
     module->ydpi = ydpi;
     module->fps = fps;
 
-    void *tmp = (void*)malloc(finfo.line_length * info.yres);
-    if(!tmp)
-    {
-        ALOGE("failed to allocate shm buffer");
-        return 1;
-    }
-
-    FILE *fp = fopen("/dev/shm/droid_screen", "wb");
-    int written = fwrite(tmp, finfo.line_length * info.yres, 1, fp);
-
-    ALOGW("allocated %d byte shm buffer", written);
-    fclose(fp);
-    free(tmp);
-
-    module->shm_fd = open("/dev/shm/droid_screen", O_RDWR | O_CREAT, 0777);
-    if (module->shm_fd != -1) {
-        module->shm_ptr = mmap(NULL, finfo.line_length * info.yres,
-               PROT_READ | PROT_WRITE, MAP_SHARED, module->shm_fd, 0);
-    }
+    // fb_post will this. but only if set like this.
+    module->fd_renderer = -1;
 
     return 0;
 }
@@ -297,25 +384,25 @@ static int fb_close(struct hw_device_t *dev)
     return 0;
 }
 
-static int shmbuffer_device_open(const hw_module_t* module, const char* name,
+static int sharebuffer_device_open(const hw_module_t* module, const char* name,
         hw_device_t** device);
 
-int shmbuffer_lock(gralloc_module_t const* module,
+int sharebuffer_lock(gralloc_module_t const* module,
         buffer_handle_t handle, int usage,
         int l, int t, int w, int h,
         void** vaddr);
 
-int shmbuffer_unlock(gralloc_module_t const* module, 
+int sharebuffer_unlock(gralloc_module_t const* module, 
         buffer_handle_t handle);
 
-int shmbuffer_register_buffer(gralloc_module_t const* module,
+int sharebuffer_register_buffer(gralloc_module_t const* module,
         buffer_handle_t handle);
 
-int shmbuffer_unregister_buffer(gralloc_module_t const* module,
+int sharebuffer_unregister_buffer(gralloc_module_t const* module,
         buffer_handle_t handle);
 
-static struct hw_module_methods_t shmbuffer_module_methods = {
-        open: shmbuffer_device_open
+static struct hw_module_methods_t sharebuffer_module_methods = {
+        open: sharebuffer_device_open
 };
 
 struct private_module_t HAL_MODULE_INFO_SYM = {
@@ -324,15 +411,15 @@ struct private_module_t HAL_MODULE_INFO_SYM = {
             tag: HARDWARE_MODULE_TAG,
             version_major: 1,
             version_minor: 0,
-            id: SHMBUFFER_HARDWARE_MODULE_ID,
-            name: "shmbuffer",
+            id: SHAREBUFFER_HARDWARE_MODULE_ID,
+            name: "sharebuffer",
             author: "krnlyng",
-            methods: &shmbuffer_module_methods
+            methods: &sharebuffer_module_methods
         },
-        registerBuffer: shmbuffer_register_buffer,
-        unregisterBuffer: shmbuffer_unregister_buffer,
-        lock: shmbuffer_lock,
-        unlock: shmbuffer_unlock,
+        registerBuffer: sharebuffer_register_buffer,
+        unregisterBuffer: sharebuffer_unregister_buffer,
+        lock: sharebuffer_lock,
+        unlock: sharebuffer_unlock,
     },
     flags: 0,
     numBuffers: 0,
@@ -341,100 +428,95 @@ struct private_module_t HAL_MODULE_INFO_SYM = {
     currentBuffer: 0,
 };
 
-static int shmbuffer_alloc(alloc_device_t* dev,
+static int sharebuffer_alloc(alloc_device_t* dev,
         int w, int h, int format, int usage,
         buffer_handle_t* pHandle, int* pStride)
 {
-    ALOGW("shmbuffer_alloc stub");
+    ALOGW("sharebuffer_alloc stub");
     return 0;
 }
 
-static int shmbuffer_free(alloc_device_t* dev,
+static int sharebuffer_free(alloc_device_t* dev,
         buffer_handle_t handle)
 {
-    ALOGW("shmbuffer_free stub");
+    ALOGW("sharebuffer_free stub");
     return 0;
 }
 
-int shmbuffer_lock(gralloc_module_t const* module,
+int sharebuffer_lock(gralloc_module_t const* module,
         buffer_handle_t handle, int usage,
         int l, int t, int w, int h,
         void** vaddr)
 {
-    ALOGW("shmbuffer_lock stub");
+    ALOGW("sharebuffer_lock stub");
     return 0;
 }
 
-int shmbuffer_unlock(gralloc_module_t const* module, 
+int sharebuffer_unlock(gralloc_module_t const* module, 
         buffer_handle_t handle)
 {
-    ALOGW("shmbuffer_unlock stub");
+    ALOGW("sharebuffer_unlock stub");
     return 0;
 }
 
-int shmbuffer_register_buffer(gralloc_module_t const* module,
+int sharebuffer_register_buffer(gralloc_module_t const* module,
         buffer_handle_t handle)
 {
-    ALOGW("shmbuffer_register_buffer stub");
+    ALOGW("sharebuffer_register_buffer stub");
     return 0;
 }
 
-int shmbuffer_unregister_buffer(gralloc_module_t const* module,
+int sharebuffer_unregister_buffer(gralloc_module_t const* module,
         buffer_handle_t handle)
 {
-    ALOGW("shmbuffer_unregister_buffer stub");
+    ALOGW("sharebuffer_unregister_buffer stub");
     return 0;
 }
 
-static int shmbuffer_close(struct hw_device_t *dev)
+static int sharebuffer_close(struct hw_device_t *dev)
 {
-    ALOGW("shmbuffer_close stub");
+    ALOGW("sharebuffer_close stub");
     return 0;
 }
 
-int shmbuffer_device_open(const hw_module_t* module, const char* name,
+int sharebuffer_device_open(const hw_module_t* module, const char* name,
         hw_device_t** device)
 {
     int status = -EINVAL;
     if (!strcmp(name, GRALLOC_HARDWARE_GPU0)) {
-        ALOGE("FATAL: Tried to load shmbuffer module with %s as argument.", name);
+        ALOGE("FATAL: Tried to load sharebuffer module with %s as argument.", name);
     } else {
-        int err = hw_get_module(GRALLOC_HARDWARE_MODULE_ID, (const hw_module_t**)&the_gralloc_module);
-        ALOGE_IF(err, "FATAL: can't find the %s module", GRALLOC_HARDWARE_MODULE_ID);
-        if(err == 0)
-        {
-            /* initialize our state here */
-            fb_context_t *dev = (fb_context_t*)malloc(sizeof(*dev));
-            memset(dev, 0, sizeof(*dev));
+        /* initialize our state here */
+        fb_context_t *dev = (fb_context_t*)malloc(sizeof(*dev));
+        memset(dev, 0, sizeof(*dev));
 
-            /* initialize the procs */
-            dev->device.common.tag = HARDWARE_DEVICE_TAG;
-            dev->device.common.version = 0;
-            dev->device.common.module = const_cast<hw_module_t*>(module);
-            dev->device.common.close = fb_close;
-            dev->device.setSwapInterval = fb_setSwapInterval;
-            dev->device.post            = fb_post;
-            dev->device.setUpdateRect = 0;
+        /* initialize the procs */
+        dev->device.common.tag = HARDWARE_DEVICE_TAG;
+        dev->device.common.version = 0;
+        dev->device.common.module = const_cast<hw_module_t*>(module);
+        dev->device.common.close = fb_close;
+        dev->device.setSwapInterval = fb_setSwapInterval;
+        dev->device.post            = fb_post;
+        dev->device.setUpdateRect = 0;
 
-            private_module_t* m = (private_module_t*)module;
-            status = mapFrameBuffer(m);
-            if (status >= 0) {
-                int stride = m->finfo.line_length / (m->info.bits_per_pixel >> 3);
-                int format = (m->info.bits_per_pixel == 32)
-                             ? HAL_PIXEL_FORMAT_RGBX_8888
-                             : HAL_PIXEL_FORMAT_RGB_565;
-                const_cast<uint32_t&>(dev->device.flags) = 0;
-                const_cast<uint32_t&>(dev->device.width) = m->info.xres;
-                const_cast<uint32_t&>(dev->device.height) = m->info.yres;
-                const_cast<int&>(dev->device.stride) = stride;
-                const_cast<int&>(dev->device.format) = format;
-                const_cast<float&>(dev->device.xdpi) = m->xdpi;
-                const_cast<float&>(dev->device.ydpi) = m->ydpi;
-                const_cast<float&>(dev->device.fps) = m->fps;
-                const_cast<int&>(dev->device.minSwapInterval) = 1;
-                const_cast<int&>(dev->device.maxSwapInterval) = 1;
-                *device = &dev->device.common;
-            }
+        private_module_t* m = (private_module_t*)module;
+        status = mapFrameBuffer(m);
+        if (status >= 0) {
+            int stride = m->finfo.line_length / (m->info.bits_per_pixel >> 3);
+            int format = (m->info.bits_per_pixel == 32)
+                         ? HAL_PIXEL_FORMAT_RGBX_8888
+                         : HAL_PIXEL_FORMAT_RGB_565;
+            const_cast<uint32_t&>(dev->device.flags) = 0;
+            const_cast<uint32_t&>(dev->device.width) = m->info.xres;
+            const_cast<uint32_t&>(dev->device.height) = m->info.yres;
+            const_cast<int&>(dev->device.stride) = stride;
+            const_cast<int&>(dev->device.format) = format;
+            const_cast<float&>(dev->device.xdpi) = m->xdpi;
+            const_cast<float&>(dev->device.ydpi) = m->ydpi;
+            const_cast<float&>(dev->device.fps) = m->fps;
+            const_cast<int&>(dev->device.minSwapInterval) = 1;
+            const_cast<int&>(dev->device.maxSwapInterval) = 1;
+            *device = &dev->device.common;
         }
     }
     return status;
