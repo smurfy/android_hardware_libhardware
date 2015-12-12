@@ -40,7 +40,8 @@
 
 #define NUM_BUFFERS 2
 
-#define SHM_BUFFER_HANDLE_FILE "/tmp/gralloc_buffer_handle"
+#define SFDROID_ROOT "/tmp/sfdroid/"
+#define SHM_BUFFER_HANDLE_FILE (SFDROID_ROOT "/gralloc_buffer_handle")
 
 int connect_to_renderer()
 {
