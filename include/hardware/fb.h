@@ -127,7 +127,7 @@ typedef struct framebuffer_device_t {
      *
      * Returns 0 on success or -errno on error.
      */
-    int (*post)(struct framebuffer_device_t* dev, buffer_handle_t buffer);
+    int (*post)(struct framebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format);
 
 
     /*

@@ -43,6 +43,14 @@
 #define SFDROID_ROOT "/tmp/sfdroid/"
 #define SHM_BUFFER_HANDLE_FILE (SFDROID_ROOT "/gralloc_buffer_handle")
 
+struct buffer_info_t
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    int32_t pixel_format;
+};
+
 int connect_to_renderer()
 {
     struct sockaddr_un addr;
@@ -69,19 +77,27 @@ int connect_to_renderer()
     return fd;
 }
 
-int send_native_handle(int fd, const native_handle_t *handle)
+int send_native_handle(int fd, const native_handle_t *handle, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format)
 {
     struct msghdr socket_message;
     struct iovec io_vector[1];
     struct cmsghdr *control_message = NULL;
+    unsigned int buffer_size = sizeof(struct buffer_info_t) + sizeof(native_handle_t) + sizeof(int)*(handle->numFds + handle->numInts);
     unsigned int handle_size = sizeof(native_handle_t) + sizeof(int)*(handle->numFds + handle->numInts);
-    char message_buffer[handle_size];
+    char message_buffer[buffer_size];
     char ancillary_buffer[CMSG_SPACE(sizeof(int) * handle->numFds)];
+    struct buffer_info_t info;
 
-    memcpy(message_buffer, handle, handle_size);
+    info.width = width;
+    info.height = height;
+    info.stride = stride;
+    info.pixel_format = pixel_format;
+
+    memcpy(message_buffer, &info, sizeof(struct buffer_info_t));
+    memcpy(message_buffer + sizeof(struct buffer_info_t), handle, handle_size);
 
     io_vector[0].iov_base = message_buffer;
-    io_vector[0].iov_len = handle_size;
+    io_vector[0].iov_len = buffer_size;
 
     memset(&socket_message, 0, sizeof(struct msghdr));
     socket_message.msg_iov = io_vector;
@@ -193,7 +209,7 @@ static int fb_setUpdateRect(struct framebuffer_device_t* dev,
     return 0;
 }
 
-static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
+static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format)
 {
     // TODO: helpers for the sizeofs
     fb_context_t* ctx = (fb_context_t*)dev;
@@ -211,7 +227,7 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
     {
         int failed;
 
-        if(send_native_handle(m->fd_renderer, buffer) < 0)
+        if(send_native_handle(m->fd_renderer, buffer, width, height, stride, pixel_format) < 0)
         {
             ALOGW("sending buffer failed: %s", strerror(errno));
             goto exit_error;
