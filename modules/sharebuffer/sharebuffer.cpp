@@ -63,6 +63,11 @@ int connect_to_renderer()
         return -1;
     }
 
+    // don't crash if we disconnect
+    //int set = 1;
+    //setsockopt(sd, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+    signal(SIGPIPE, SIG_IGN);
+
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SHM_BUFFER_HANDLE_FILE, sizeof(addr.sun_path)-1);
@@ -245,7 +250,9 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer, uin
 exit_error:
     close(m->fd_renderer);
     m->fd_renderer = -1;
-    return -1;
+
+    // just ignore the buffer
+    return 0;
 }
 
 int mapFrameBufferLocked(struct private_module_t* module)
