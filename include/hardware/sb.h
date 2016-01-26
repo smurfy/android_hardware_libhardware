@@ -15,8 +15,10 @@
  */
 
 
-#ifndef ANDROID_FB_INTERFACE_H
-#define ANDROID_FB_INTERFACE_H
+#ifndef ANDROID_SB_INTERFACE_H
+#define ANDROID_SB_INTERFACE_H
+
+#define SHAREBUFFER_HARDWARE_MODULE_ID "sharebuffer"
 
 #include <stdint.h>
 #include <sys/cdefs.h>
@@ -25,23 +27,16 @@
 #include <cutils/native_handle.h>
 
 #include <hardware/hardware.h>
+#include <hardware/fb.h>
 
 __BEGIN_DECLS
 
-#define GRALLOC_HARDWARE_FB0 "fb0"
-
 /*****************************************************************************/
 
 
 /*****************************************************************************/
 
-typedef struct framebuffer_device_t {
-    /**
-     * Common methods of the framebuffer device.  This *must* be the first member of
-     * framebuffer_device_t as users of this structure will cast a hw_device_t to
-     * framebuffer_device_t pointer in contexts where it's known the hw_device_t references a
-     * framebuffer_device_t.
-     */
+typedef struct sharebuffer_device_t {
     struct hw_device_t common;
 
     /* flags describing some attributes of the framebuffer */
@@ -80,7 +75,7 @@ typedef struct framebuffer_device_t {
      *
      * Returns 0 on success or -errno on error.
      */
-    int (*setSwapInterval)(struct framebuffer_device_t* window,
+    int (*setSwapInterval)(struct sharebuffer_device_t* window,
             int interval);
 
     /*
@@ -103,7 +98,7 @@ typedef struct framebuffer_device_t {
      *
      * return -EINVAL if width or height <=0, or if left or top < 0
      */
-    int (*setUpdateRect)(struct framebuffer_device_t* window,
+    int (*setUpdateRect)(struct sharebuffer_device_t* window,
             int left, int top, int width, int height);
 
     /*
@@ -125,7 +120,7 @@ typedef struct framebuffer_device_t {
      *
      * Returns 0 on success or -errno on error.
      */
-    int (*post)(struct framebuffer_device_t* dev, buffer_handle_t buffer);
+    int (*post)(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format);
 
 
     /*
@@ -133,14 +128,14 @@ typedef struct framebuffer_device_t {
      * compositor has finished issuing GL commands for client buffers.
      */
 
-    int (*compositionComplete)(struct framebuffer_device_t* dev);
+    int (*compositionComplete)(struct sharebuffer_device_t* dev);
 
     /*
      * This hook is OPTIONAL.
      *
      * If non NULL it will be caused by SurfaceFlinger on dumpsys
      */
-    void (*dump)(struct framebuffer_device_t* dev, char *buff, int buff_len);
+    void (*dump)(struct sharebuffer_device_t* dev, char *buff, int buff_len);
 
     /*
      * (*enableScreen)() is used to either blank (enable=0) or
@@ -148,25 +143,26 @@ typedef struct framebuffer_device_t {
      *
      * Returns 0 on success or -errno on error.
      */
-    int (*enableScreen)(struct framebuffer_device_t* dev, int enable);
+    int (*enableScreen)(struct sharebuffer_device_t* dev, int enable);
 
     void* reserved_proc[6];
 
-} framebuffer_device_t;
+} sharebuffer_device_t;
 
 
 /** convenience API for opening and closing a supported device */
 
-static inline int framebuffer_open(const struct hw_module_t* module,
-        struct framebuffer_device_t** device) {
+static inline int sharebuffer_open(const struct hw_module_t* module,
+        struct sharebuffer_device_t** device) {
     return module->methods->open(module,
             GRALLOC_HARDWARE_FB0, (struct hw_device_t**)device);
 }
 
-static inline int framebuffer_close(struct framebuffer_device_t* device) {
+static inline int sharebuffer_close(struct sharebuffer_device_t* device) {
     return device->common.close(&device->common);
 }
 
+
 __END_DECLS
 
-#endif  // ANDROID_FB_INTERFACE_H
+#endif  // ANDROID_SB_INTERFACE_H

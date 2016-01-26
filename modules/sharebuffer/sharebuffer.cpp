@@ -35,6 +35,7 @@
 
 #include <hardware/hardware.h>
 #include <hardware/gralloc.h>
+#include <hardware/sb.h>
 
 #include <linux/fb.h>
 
@@ -185,27 +186,27 @@ struct private_module_t {
     int fd_renderer;
 };
 
-struct fb_context_t {
-    framebuffer_device_t device;
+struct sb_context_t {
+    sharebuffer_device_t device;
 };
 
-static int fb_setSwapInterval(struct framebuffer_device_t* dev,
+static int sb_setSwapInterval(struct sharebuffer_device_t* dev,
             int interval)
 {
-    fb_context_t* ctx = (fb_context_t*)dev;
+    sb_context_t* ctx = (sb_context_t*)dev;
     if (interval < dev->minSwapInterval || interval > dev->maxSwapInterval)
         return -EINVAL;
-    // FIXME: implement fb_setSwapInterval
+    // FIXME: implement sb_setSwapInterval
     return 0;
 }
 
-static int fb_setUpdateRect(struct framebuffer_device_t* dev,
+static int fb_setUpdateRect(struct sharebuffer_device_t* dev,
         int l, int t, int w, int h)
 {
     if (((w|h) <= 0) || ((l|t)<0))
         return -EINVAL;
         
-    fb_context_t* ctx = (fb_context_t*)dev;
+    sb_context_t* ctx = (sb_context_t*)dev;
     private_module_t* m = reinterpret_cast<private_module_t*>(
             dev->common.module);
     m->info.reserved[0] = 0x54445055; // "UPDT";
@@ -214,10 +215,10 @@ static int fb_setUpdateRect(struct framebuffer_device_t* dev,
     return 0;
 }
 
-static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format)
+static int sb_post(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format)
 {
     // TODO: helpers for the sizeofs
-    fb_context_t* ctx = (fb_context_t*)dev;
+    sb_context_t* ctx = (sb_context_t*)dev;
 
     private_module_t* m = reinterpret_cast<private_module_t*>(
             dev->common.module);
@@ -385,7 +386,7 @@ int mapFrameBufferLocked(struct private_module_t* module)
     module->ydpi = ydpi;
     module->fps = fps;
 
-    // fb_post will this. but only if set like this.
+    // sb_post will this. but only if set like this.
     module->fd_renderer = -1;
 
     return 0;
@@ -399,9 +400,9 @@ static int mapFrameBuffer(struct private_module_t* module)
     return err;
 }
 
-static int fb_close(struct hw_device_t *dev)
+static int sb_close(struct hw_device_t *dev)
 {
-    fb_context_t* ctx = (fb_context_t*)dev;
+    sb_context_t* ctx = (sb_context_t*)dev;
     if (ctx) {
         free(ctx);
     }
@@ -497,12 +498,6 @@ int sharebuffer_unregister_buffer(gralloc_module_t const* module,
     return 0;
 }
 
-static int sharebuffer_close(struct hw_device_t *dev)
-{
-    ALOGW("sharebuffer_close stub");
-    return 0;
-}
-
 int sharebuffer_device_open(const hw_module_t* module, const char* name,
         hw_device_t** device)
 {
@@ -511,16 +506,16 @@ int sharebuffer_device_open(const hw_module_t* module, const char* name,
         ALOGE("FATAL: Tried to load sharebuffer module with %s as argument.", name);
     } else {
         /* initialize our state here */
-        fb_context_t *dev = (fb_context_t*)malloc(sizeof(*dev));
+        sb_context_t *dev = (sb_context_t*)malloc(sizeof(*dev));
         memset(dev, 0, sizeof(*dev));
 
         /* initialize the procs */
         dev->device.common.tag = HARDWARE_DEVICE_TAG;
         dev->device.common.version = 0;
         dev->device.common.module = const_cast<hw_module_t*>(module);
-        dev->device.common.close = fb_close;
-        dev->device.setSwapInterval = fb_setSwapInterval;
-        dev->device.post            = fb_post;
+        dev->device.common.close = sb_close;
+        dev->device.setSwapInterval = sb_setSwapInterval;
+        dev->device.post            = sb_post;
         dev->device.setUpdateRect = 0;
 
         private_module_t* m = (private_module_t*)module;
