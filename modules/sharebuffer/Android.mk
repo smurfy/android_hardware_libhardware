@@ -20,10 +20,13 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
-LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware
+LOCAL_SHARED_LIBRARIES := liblog libcutils libhardware libstlport
 
 LOCAL_SRC_FILES := 	\
 	sharebuffer.cpp
+
+LOCAL_C_INCLUDES := bionic \
+	external/stlport/stlport
 
 LOCAL_MODULE := sharebuffer.default
 LOCAL_CFLAGS:= -DLOG_TAG=\"sharebuffer\"

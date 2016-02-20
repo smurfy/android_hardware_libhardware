@@ -39,6 +39,8 @@
 
 #include <linux/fb.h>
 
+#include <vector>
+
 #define NUM_BUFFERS 2
 
 #define SFDROID_ROOT "/tmp/sfdroid/"
@@ -124,7 +126,7 @@ int send_native_handle(int fd, const native_handle_t *handle, uint32_t width, ui
         ((int*)CMSG_DATA(control_message))[i] = handle->data[i];
     }
 
-    return sendmsg(fd, &socket_message, 0);
+    return sendmsg(fd, &socket_message, MSG_WAITALL);
 }
 
 int recv_status(int fd, int *failed)
@@ -184,6 +186,8 @@ struct private_module_t {
     float fps;
 
     int fd_renderer;
+
+    std::vector<buffer_handle_t> buffers;
 };
 
 struct sb_context_t {
@@ -232,17 +236,60 @@ static int sb_post(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uin
     if(m->fd_renderer >= 0)
     {
         int failed;
+        bool already_sent = false;
+        int index = -1;
 
-        if(send_native_handle(m->fd_renderer, buffer, width, height, stride, pixel_format) < 0)
+        for(std::vector<buffer_handle_t>::size_type i=0;i<m->buffers.size();i++)
         {
-            ALOGW("sending buffer failed: %s", strerror(errno));
-            goto exit_error;
+            if(m->buffers[i] == buffer)
+            {
+                already_sent = true;
+                index = i;
+            }
         }
 
-        if(recv_status(m->fd_renderer, &failed) < 0)
+        if(!already_sent)
         {
-            ALOGW("recv_status failed: %s", strerror(errno));
-            goto exit_error;
+            char buf[1];
+            buf[0] = 0xFF;
+
+            if(send(m->fd_renderer, buf, 1, 0) < 0)
+            {
+                ALOGW("failed to send buffer notification: %s", strerror(errno));
+                goto exit_error;
+            }
+
+            if(send_native_handle(m->fd_renderer, buffer, width, height, stride, pixel_format) < 0)
+            {
+                ALOGW("sending buffer failed: %s", strerror(errno));
+                goto exit_error;
+            }
+
+            if(recv_status(m->fd_renderer, &failed) < 0)
+            {
+                ALOGW("recv_status failed: %s", strerror(errno));
+                goto exit_error;
+            }
+
+            ALOGW("adding buffer");
+            m->buffers.push_back(buffer);
+        }
+        else
+        {
+            char buf[1];
+            buf[0] = index;
+
+            if(send(m->fd_renderer, buf, 1, 0) < 0)
+            {
+                ALOGW("failed to send old buffer notification: %s", strerror(errno));
+                goto exit_error;
+            }
+
+            if(recv_status(m->fd_renderer, &failed) < 0)
+            {
+                ALOGW("recv_status failed: %s", strerror(errno));
+                goto exit_error;
+            }
         }
     }
 
@@ -251,6 +298,8 @@ static int sb_post(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uin
 exit_error:
     close(m->fd_renderer);
     m->fd_renderer = -1;
+    ALOGW("clearing buffers");
+    m->buffers.resize(0);
 
     // just ignore the buffer
     return 0;
@@ -385,6 +434,8 @@ int mapFrameBufferLocked(struct private_module_t* module)
     module->xdpi = xdpi;
     module->ydpi = ydpi;
     module->fps = fps;
+
+    module->buffers.resize(0);
 
     // sb_post will this. but only if set like this.
     module->fd_renderer = -1;
