@@ -235,6 +235,7 @@ static int poll__poll(struct sensors_poll_device_t *dev,
                 data->acceleration.y = params[1];
                 data->acceleration.z = params[2];
                 data->timestamp = timestamp;
+                data->type = SENSOR_TYPE_ACCELEROMETER;
                 data++;
                 return i+1;
             }
