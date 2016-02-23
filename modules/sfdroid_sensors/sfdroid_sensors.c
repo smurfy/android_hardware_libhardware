@@ -60,6 +60,16 @@ int connect_to_sfdroid()
         return -1;
     }
 
+    struct timeval timeout;
+    memset(&timeout, 0, sizeof(timeout));
+
+    timeout.tv_sec = 1;
+
+    if(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0)
+    {
+        ALOGE("failed to set timeout on sensor socket: %s", strerror(errno));
+    }
+
     return fd;
 }
 
