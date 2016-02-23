@@ -236,7 +236,7 @@ static int poll__poll(struct sensors_poll_device_t *dev,
                 data->acceleration.z = params[2];
                 data->timestamp = timestamp;
                 data++;
-                continue;
+                return i+1;
             }
 
             ALOGE("unsupported command: %s", buff);
