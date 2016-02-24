@@ -55,7 +55,7 @@ int connect_to_sfdroid()
     if(connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
     {
         ALOGE("error connecting to sfdroidsensors: %s", strerror(errno));
-        usleep(100000);
+        usleep(1000000);
         close(fd);
         return -1;
     }
@@ -151,6 +151,7 @@ typedef struct SensorPoll {
     struct sensors_poll_device_t  device;
     int                           fd;
     int64_t                       delay;
+    int                           accelerometer_active;
 } SensorPoll;
 
 /** SENSORS POLL DEVICE FUNCTIONS **/
@@ -177,6 +178,12 @@ static int poll__poll(struct sensors_poll_device_t *dev,
     if (ctl->fd < 0) {
         D("%s: OPEN CONNECTION", __FUNCTION__);
         ctl->fd = connect_to_sfdroid();
+    }
+
+    if(!ctl->accelerometer_active)
+    {
+        usleep(2000000);
+        return 0;
     }
 
     if(ctl->fd >= 0)
@@ -289,6 +296,7 @@ static int poll__activate(struct sensors_poll_device_t *dev,
             }
         }
 
+        ctl->accelerometer_active = (enabled != 0) ? 1 : 0;
         // sfdroid not up yet
         return 0;
     }
@@ -446,6 +454,8 @@ open_sensors(const struct hw_module_t* module,
         dev->device.activate       = poll__activate;
         dev->device.setDelay       = poll__setDelay;
         dev->fd                    = -1;
+        dev->delay                 = 250000000;
+        dev->accelerometer_active  = 0;
 
         *device = &dev->device.common;
         status  = 0;
