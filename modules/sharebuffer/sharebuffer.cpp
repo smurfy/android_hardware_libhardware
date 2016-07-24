@@ -186,6 +186,7 @@ struct private_module_t {
     float fps;
 
     int fd_renderer;
+    char layer_name[512];
 
     std::vector<buffer_handle_t> buffers;
 };
@@ -219,6 +220,141 @@ static int fb_setUpdateRect(struct sharebuffer_device_t* dev,
     return 0;
 }
 
+static void sb_set_layer_name(struct sharebuffer_device_t *dev, const char *name)
+{
+    sb_context_t* ctx = (sb_context_t*)dev;
+
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+            dev->common.module);
+
+    if(m->fd_renderer < 0)
+    {
+        ALOGW("connecting to renderer");
+        memset(m->layer_name, 0, 512);
+        m->fd_renderer = connect_to_renderer();
+    }
+
+    if(m->fd_renderer >= 0)
+    {
+        char buf[1];
+        buf[0] = 0xFE;
+
+        if(strcmp(m->layer_name, name) == 0)
+        {
+            return;
+        }
+
+        if(send(m->fd_renderer, buf, 1, 0) < 0)
+        {
+            ALOGW("failed to send layer name notification: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        buf[0] = strlen(name);
+        if(send(m->fd_renderer, buf, 1, 0) < 0)
+        {
+            ALOGW("failed to send layer name length: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        if(send(m->fd_renderer, name, buf[0], 0) < 0)
+        {
+            ALOGW("failed to send: layer name: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        strcpy(m->layer_name, name);
+    }
+
+    return;
+
+exit_error:
+    close(m->fd_renderer);
+    m->fd_renderer = -1;
+    ALOGW("clearing buffers");
+    m->buffers.resize(0);
+
+    return;
+}
+
+static void sb_close_layer(struct sharebuffer_device_t *dev, const char *name)
+{
+    sb_context_t* ctx = (sb_context_t*)dev;
+
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+            dev->common.module);
+
+    if(m->fd_renderer < 0)
+    {
+        ALOGW("connecting to renderer");
+        memset(m->layer_name, 0, 512);
+        m->fd_renderer = connect_to_renderer();
+    }
+
+ALOGE("closing layer: %s", name);
+
+    if(m->fd_renderer >= 0)
+    {
+        char buf[1];
+        buf[0] = 0xFD;
+
+ALOGE("closing layer2: %s", name);
+/*
+        if(strcmp(m->layer_name, name) == 0)
+        {
+            return;
+        }
+*/
+
+        if(send(m->fd_renderer, buf, 1, 0) < 0)
+        {
+            ALOGW("failed to send layer close name notification: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        buf[0] = strlen(name);
+        if(send(m->fd_renderer, buf, 1, 0) < 0)
+        {
+            ALOGW("failed to send layer close name length: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        if(send(m->fd_renderer, name, buf[0], 0) < 0)
+        {
+            ALOGW("failed to send: layer close name: %s", strerror(errno));
+            goto exit_error;
+        }
+
+        strcpy(m->layer_name, name);
+    }
+
+    return;
+
+exit_error:
+    close(m->fd_renderer);
+    m->fd_renderer = -1;
+    ALOGW("clearing buffers");
+    m->buffers.resize(0);
+
+    return;
+}
+
+static int sb_is_connected(struct sharebuffer_device_t *dev)
+{
+    // TODO: helpers for the sizeofs
+    sb_context_t* ctx = (sb_context_t*)dev;
+
+    private_module_t* m = reinterpret_cast<private_module_t*>(
+            dev->common.module);
+
+    if(m->fd_renderer < 0)
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
 static int sb_post(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uint32_t width, uint32_t height, uint32_t stride, int32_t pixel_format)
 {
     // TODO: helpers for the sizeofs
@@ -230,6 +366,7 @@ static int sb_post(struct sharebuffer_device_t* dev, buffer_handle_t buffer, uin
     if(m->fd_renderer < 0)
     {
         ALOGW("connecting to renderer");
+        memset(m->layer_name, 0, 512);
         m->fd_renderer = connect_to_renderer();
     }
 
@@ -572,6 +709,9 @@ int sharebuffer_device_open(const hw_module_t* module, const char* name,
         dev->device.common.close = sb_close;
         dev->device.setSwapInterval = sb_setSwapInterval;
         dev->device.post            = sb_post;
+        dev->device.set_layer_name  = sb_set_layer_name;
+        dev->device.is_connected    = sb_is_connected;
+        dev->device.close_layer     = sb_close_layer;
         dev->device.setUpdateRect = 0;
 
         private_module_t* m = (private_module_t*)module;

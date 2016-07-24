@@ -145,6 +145,12 @@ typedef struct sharebuffer_device_t {
      */
     int (*enableScreen)(struct sharebuffer_device_t* dev, int enable);
 
+    int (*is_connected)(struct sharebuffer_device_t *dev);
+
+    void (*set_layer_name)(struct sharebuffer_device_t *dev, const char *name);
+
+    void (*close_layer)(struct sharebuffer_device_t *dev, const char *name);
+
     void* reserved_proc[6];
 
 } sharebuffer_device_t;
